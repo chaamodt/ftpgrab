@@ -106,10 +106,32 @@ func (c *Client) ReadDir(path string) ([]os.FileInfo, error) {
 	// send the request and get the response
 	resp, err := c.http.HTTPClient.Do(req)
 	if err != nil {
-		log.Debug().Str("path", path).Err(err).Msgf("Error sending request to HEAD url %s !", urlStr)
-		return nil, err
+		log.Warn().
+			Str("url", urlStr).
+			Err(err).
+			Msg("HEAD failed, trying GET")
+
+		// fallback GET
+		req, err = http.NewRequest("GET", urlStr, nil)
+		if err != nil {
+			log.Debug().Str("path", path).Msgf("Cannot create grab get request for url %s", urlStr)
+			return nil, err
+		}
+
+		resp, err = c.http.HTTPClient.Do(req)
+		if err != nil {
+			log.Debug().Str("path", path).Err(err).Msgf("Error sending request to GET url %s !", urlStr)
+			return nil, err
+		}
 	}
 	defer resp.Body.Close()
+
+	// resp, err := c.http.HTTPClient.Do(req)
+	// if err != nil {
+	// 	log.Debug().Str("path", path).Err(err).Msgf("Error sending request to HEAD url %s !", urlStr)
+	// 	return nil, err
+	// }
+	// defer resp.Body.Close()
 
 	// check if the response was a redirect
 	if resp.StatusCode >= 300 && resp.StatusCode <= 399 {
