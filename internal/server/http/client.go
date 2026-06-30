@@ -2,6 +2,7 @@ package http
 
 import (
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -189,6 +190,45 @@ func (c *Client) ReadDir(path string) ([]os.FileInfo, error) {
 }
 
 // Retrieve file "path" from server and write bytes to "dest".
+// func (c *Client) Retrieve(path string, dest io.Writer) error {
+// 	var urlStr string
+// 	urlStr = "http"
+// 	if *c.config.TLS {
+// 		urlStr += "s"
+// 	}
+
+// 	// prepare url
+// 	urlStr += "://" + c.config.Host + ":" + strconv.Itoa(c.config.Port) + path
+
+// 	tempfile, err := os.CreateTemp("", "*")
+// 	if err != nil {
+// 		log.Debug().Str("path", path).Err(err).Msgf("Cannot create temporary file for url %s !", urlStr)
+// 		return err
+// 	}
+
+// 	log.Debug().Msgf("HTTP Retrieve url %s ...", urlStr)
+
+// 	req, err := grab.NewRequest(tempfile.Name(), urlStr)
+// 	if err != nil {
+// 		log.Debug().Str("path", path).Err(err).Msgf("Cannot create grab request for url %s !", urlStr)
+// 		return err
+// 	}
+
+// 	resp := c.http.Do(req)
+// 	if err := resp.Err(); err != nil {
+// 		log.Debug().Str("path", path).Err(err).Msgf("Error exec grab request for url %s !", urlStr)
+// 		return err
+// 	}
+
+// 	if _, err := io.Copy(dest, tempfile); err != nil {
+// 		log.Debug().Str("path", path).Str("temfile", tempfile.Name()).Err(err).Msgf("Error copy temp file to destination for url %s !", urlStr)
+// 		return err
+// 	}
+
+// 	defer os.Remove(tempfile.Name())
+
+//		return nil
+//	}
 func (c *Client) Retrieve(path string, dest io.Writer) error {
 	var urlStr string
 	urlStr = "http"
@@ -196,37 +236,30 @@ func (c *Client) Retrieve(path string, dest io.Writer) error {
 		urlStr += "s"
 	}
 
-	// prepare url
 	urlStr += "://" + c.config.Host + ":" + strconv.Itoa(c.config.Port) + path
 
-	tempfile, err := os.CreateTemp("", "*")
+	// requête GET simple
+	req, err := http.NewRequest("GET", urlStr, nil)
 	if err != nil {
-		log.Debug().Str("path", path).Err(err).Msgf("Cannot create temporary file for url %s !", urlStr)
 		return err
 	}
 
-	log.Debug().Msgf("HTTP Retrieve url %s ...", urlStr)
-
-	req, err := grab.NewRequest(tempfile.Name(), urlStr)
+	// client HTTP existant (proxy / TLS / transport déjà configuré)
+	resp, err := c.http.HTTPClient.Do(req)
 	if err != nil {
-		log.Debug().Str("path", path).Err(err).Msgf("Cannot create grab request for url %s !", urlStr)
 		return err
 	}
+	defer resp.Body.Close()
 
-	resp := c.http.Do(req)
-	if err := resp.Err(); err != nil {
-		log.Debug().Str("path", path).Err(err).Msgf("Error exec grab request for url %s !", urlStr)
-		return err
+	// gestion des erreurs HTTP propres
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		io.Copy(io.Discard, resp.Body)
+		return fmt.Errorf("bad status: %s", resp.Status)
 	}
 
-	if _, err := io.Copy(dest, tempfile); err != nil {
-		log.Debug().Str("path", path).Str("temfile", tempfile.Name()).Err(err).Msgf("Error copy temp file to destination for url %s !", urlStr)
-		return err
-	}
-
-	defer os.Remove(tempfile.Name())
-
-	return nil
+	// copie du flux (download réel)
+	_, err = io.Copy(dest, resp.Body)
+	return err
 }
 
 // Close closes http connection
