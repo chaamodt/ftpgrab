@@ -4,10 +4,12 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/araddon/dateparse"
@@ -97,63 +99,135 @@ func (c *Client) ReadDir(path string) ([]os.FileInfo, error) {
 
 	log.Debug().Msgf("HTTP Head url %s ...", urlStr)
 
-	// prepare HEAD request
-	req, err := http.NewRequest("HEAD", urlStr, nil)
+	req, err := http.NewRequest(http.MethodHead, urlStr, nil)
 	if err != nil {
 		log.Debug().Str("path", path).Msgf("Cannot create grab head request for url %s", urlStr)
 		return nil, err
 	}
 
-	// send the request and get the response
 	resp, err := c.http.HTTPClient.Do(req)
+	if err == nil && !needsGetMetadata(path, resp) {
+		defer resp.Body.Close()
+		return c.fileInfoFromResponse(path, resp, resp.ContentLength)
+	}
+	if resp != nil {
+		resp.Body.Close()
+	}
 	if err != nil {
 		log.Warn().
 			Str("url", urlStr).
 			Err(err).
-			Msg("HEAD failed, trying GET")
+			Msg("HEAD failed, trying ranged GET")
+	} else {
+		log.Warn().
+			Str("url", urlStr).
+			Int("status", resp.StatusCode).
+			Int64("size", resp.ContentLength).
+			Msg("HEAD returned unusable metadata, trying ranged GET")
+	}
 
-		// fallback GET
-		req, err = http.NewRequest("GET", urlStr, nil)
+	resp, size, err := c.getMetadataWithGet(urlStr, path, true)
+	if err != nil {
+		log.Warn().
+			Str("url", urlStr).
+			Err(err).
+			Msg("Ranged GET failed, trying regular GET headers")
+		resp, size, err = c.getMetadataWithGet(urlStr, path, false)
 		if err != nil {
-			log.Debug().Str("path", path).Msgf("Cannot create grab get request for url %s", urlStr)
-			return nil, err
-		}
-
-		resp, err = c.http.HTTPClient.Do(req)
-		if err != nil {
-			log.Debug().Str("path", path).Err(err).Msgf("Error sending request to GET url %s !", urlStr)
 			return nil, err
 		}
 	}
 	defer resp.Body.Close()
 
-	// resp, err := c.http.HTTPClient.Do(req)
-	// if err != nil {
-	// 	log.Debug().Str("path", path).Err(err).Msgf("Error sending request to HEAD url %s !", urlStr)
-	// 	return nil, err
-	// }
-	// defer resp.Body.Close()
+	return c.fileInfoFromResponse(path, resp, size)
+}
 
-	// check if the response was a redirect
-	if resp.StatusCode >= 300 && resp.StatusCode <= 399 {
-		redirectURL, err := resp.Location()
-		if err != nil {
-			log.Debug().Str("path", path).Err(err).Msgf("Error getting redirect location for url %s !", urlStr)
-			return nil, err
-		}
-
-		// create a new GET request to follow the redirect
-		req.URL = redirectURL
-		resp, err = c.http.HTTPClient.Do(req)
-		if err != nil {
-			log.Debug().Str("path", path).Err(err).Msgf("Error sending redirect request %s to HEAD url %s !", redirectURL, urlStr)
-			return nil, err
-		}
-		defer resp.Body.Close()
+func needsGetMetadata(path string, resp *http.Response) bool {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || resp.ContentLength < 0 {
+		return true
 	}
 
+	return isHTMLForNonHTMLPath(path, resp)
+}
+
+func isHTMLForNonHTMLPath(path string, resp *http.Response) bool {
+	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || mediaType != "text/html" {
+		return false
+	}
+
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext != ".htm" && ext != ".html"
+}
+
+func (c *Client) getMetadataWithGet(urlStr, path string, ranged bool) (*http.Response, int64, error) {
+	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	if ranged {
+		req.Header.Set("Range", "bytes=0-0")
+	}
+
+	resp, err := c.http.HTTPClient.Do(req)
+	if err != nil {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return nil, 0, err
+	}
+
+	if (resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices) &&
+		!(ranged && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable) {
+		resp.Body.Close()
+		return nil, 0, fmt.Errorf("GET %s returned status %s", urlStr, resp.Status)
+	}
+	if isHTMLForNonHTMLPath(path, resp) {
+		resp.Body.Close()
+		return nil, 0, fmt.Errorf("GET %s returned HTML for a non-HTML file", urlStr)
+	}
+
+	var size int64
+	switch resp.StatusCode {
+	case http.StatusPartialContent:
+		size, err = contentRangeSize(resp.Header.Get("Content-Range"))
+	case http.StatusRequestedRangeNotSatisfiable:
+		size, err = contentRangeSize(resp.Header.Get("Content-Range"))
+	default:
+		size = resp.ContentLength
+		if size < 0 {
+			err = fmt.Errorf("GET %s did not provide a content length", urlStr)
+		}
+	}
+	if err != nil {
+		resp.Body.Close()
+		return nil, 0, err
+	}
+
+	return resp, size, nil
+}
+
+func contentRangeSize(header string) (int64, error) {
+	unit, value, ok := strings.Cut(strings.TrimSpace(header), " ")
+	if !ok || unit != "bytes" {
+		return 0, fmt.Errorf("invalid Content-Range %q", header)
+	}
+	_, total, ok := strings.Cut(value, "/")
+	if !ok || total == "*" {
+		return 0, fmt.Errorf("invalid Content-Range %q", header)
+	}
+
+	size, err := strconv.ParseInt(total, 10, 64)
+	if err != nil || size < 0 {
+		return 0, fmt.Errorf("invalid Content-Range %q", header)
+	}
+	return size, nil
+}
+
+func (c *Client) fileInfoFromResponse(path string, resp *http.Response, size int64) ([]os.FileInfo, error) {
 	// decode time
 	var resptime time.Time
+	var err error
 
 	if resp.Header.Get("last-modified") != "" {
 		// header last-modified
@@ -167,7 +241,7 @@ func (c *Client) ReadDir(path string) ([]os.FileInfo, error) {
 	}
 
 	if err != nil {
-		log.Debug().Str("path", path).Err(err).Msgf("Error decoding date for url %s !", urlStr)
+		log.Debug().Str("path", path).Err(err).Msg("Error decoding HTTP response date")
 		return nil, err
 	}
 
@@ -181,7 +255,7 @@ func (c *Client) ReadDir(path string) ([]os.FileInfo, error) {
 		name:  filepath.Base(path),
 		mode:  mode,
 		mtime: resptime,
-		size:  int64(resp.ContentLength),
+		size:  size,
 	}
 
 	entries = append(entries, fileInfo)
@@ -255,6 +329,9 @@ func (c *Client) Retrieve(path string, dest io.Writer) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		io.Copy(io.Discard, resp.Body)
 		return fmt.Errorf("bad status: %s", resp.Status)
+	}
+	if isHTMLForNonHTMLPath(path, resp) {
+		return fmt.Errorf("GET %s returned HTML for a non-HTML file", urlStr)
 	}
 
 	// copie du flux (download réel)
