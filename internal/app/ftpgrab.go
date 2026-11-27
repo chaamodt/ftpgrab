@@ -102,6 +102,14 @@ func (fg *FtpGrab) Run() {
 	var includedFiles []grabber.File
 	var sumIncluded float64 = 0
 	var sumDownloading float64 = 0
+	var includedSizeUnknown bool
+	var downloadingSizeUnknown bool
+	formatSize := func(size int64) string {
+		if size < 0 {
+			return "unknown"
+		}
+		return units.HumanSize(float64(size))
+	}
 
 	for _, file := range files {
 		entry := &journal.Entry{
@@ -112,24 +120,40 @@ func (fg *FtpGrab) Run() {
 		sublogger := log.With().
 			Str("src", entry.File).
 			Str("dest", file.DestDir).
-			Str("size", units.HumanSize(float64(file.Info.Size()))).
+			Str("size", formatSize(file.Info.Size())).
 			Logger()
 
 		if fg.grabber.IsIncluded(file) && !fg.grabber.IsExcluded(file) {
 			includedFiles = append(includedFiles, file)
-			sumIncluded += float64(file.Info.Size())
+			if file.Info.Size() < 0 {
+				includedSizeUnknown = true
+			} else {
+				sumIncluded += float64(file.Info.Size())
+			}
 		}
 
 		if entry.Status.IsSkipped() {
 			fg.grabber.SkippingFile(entry, sublogger)
 		} else {
 			filteredFiles = append(filteredFiles, file)
-			sumDownloading += float64(file.Info.Size())
+			if file.Info.Size() < 0 {
+				downloadingSizeUnknown = true
+			} else {
+				sumDownloading += float64(file.Info.Size())
+			}
 		}
 	}
 
-	log.Info().Strs("sources", fg.grabber.ListExprSrc()).Msgf("%d file(s) of %s to be included from remote site.", len(includedFiles), units.BytesSize(sumIncluded))
-	log.Info().Strs("sources", fg.grabber.ListExprSrc()).Msgf("%d file(s) of %s to be downloaded from remote site.", len(filteredFiles), units.BytesSize(sumDownloading))
+	includedSize := units.BytesSize(sumIncluded)
+	if includedSizeUnknown {
+		includedSize = "unknown"
+	}
+	downloadingSize := units.BytesSize(sumDownloading)
+	if downloadingSizeUnknown {
+		downloadingSize = "unknown"
+	}
+	log.Info().Strs("sources", fg.grabber.ListExprSrc()).Msgf("%d file(s) of %s to be included from remote site.", len(includedFiles), includedSize)
+	log.Info().Strs("sources", fg.grabber.ListExprSrc()).Msgf("%d file(s) of %s to be downloaded from remote site.", len(filteredFiles), downloadingSize)
 
 	var jnl journal.Journal
 	// Grab

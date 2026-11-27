@@ -123,6 +123,20 @@ List of sources paths to grab from HTTP server. Must be url to resources as file
 !!! abstract "Environment variables"
     * `FTPGRAB_SERVER_HTTP_SOURCES`
 
+### `userAgent`
+
+Optional `User-Agent` header for HTTP requests. Set this when the remote server requires a particular client identifier. If omitted, Go's default User-Agent is used.
+
+!!! example "Config file"
+    ```yaml
+    server:
+      http:
+        userAgent: Wget
+    ```
+
+!!! abstract "Environment variables"
+    * `FTPGRAB_SERVER_HTTP_USERAGENT`
+
 ### `timeout`
 
 Timeout is the maximum amount of time for the TLS Handshake and the maximum amount of time to wait for a server's response headers after fully writing the request. (default `5s`)

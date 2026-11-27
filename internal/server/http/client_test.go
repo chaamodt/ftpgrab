@@ -28,9 +28,10 @@ func newTestClient(t *testing.T, handler stdhttp.Handler) (*Client, *httptest.Se
 
 	return &Client{
 		config: &config.ServerHTTP{
-			Host: host,
-			Port: port,
-			TLS:  &tls,
+			Host:      host,
+			Port:      port,
+			TLS:       &tls,
+			UserAgent: "Wget",
 		},
 		http: httpClient,
 	}, server
@@ -41,6 +42,7 @@ func TestReadDirUsesHeadWhenMetadataIsUsable(t *testing.T) {
 	client, server := newTestClient(t, stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		requests++
 		require.Equal(t, stdhttp.MethodHead, r.Method)
+		require.Equal(t, "Wget", r.Header.Get("User-Agent"))
 		w.Header().Set("Content-Type", "application/zip")
 		w.Header().Set("Content-Length", "123")
 		w.WriteHeader(stdhttp.StatusOK)
@@ -52,6 +54,24 @@ func TestReadDirUsesHeadWhenMetadataIsUsable(t *testing.T) {
 	require.Len(t, entries, 1)
 	require.EqualValues(t, 123, entries[0].Size())
 	require.Equal(t, 1, requests)
+}
+
+func TestReadDirAcceptsUnknownSizeWithLastModified(t *testing.T) {
+	client := &Client{}
+	resp := &stdhttp.Response{
+		StatusCode:    stdhttp.StatusOK,
+		ContentLength: -1,
+		Header: stdhttp.Header{
+			"Content-Type":  {"application/zip"},
+			"Last-Modified": {"Sun, 01 Nov 2026 05:00:21 GMT"},
+		},
+	}
+
+	require.False(t, needsGetMetadata("/file.zip", resp))
+	entries, err := client.fileInfoFromResponse("/file.zip", resp, resp.ContentLength)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.EqualValues(t, -1, entries[0].Size())
 }
 
 func TestReadDirUsesRangedGetWhenHeadReturnsHTML(t *testing.T) {
@@ -110,7 +130,8 @@ func TestReadDirFallsBackToRegularGetWhenRangeIsIgnoredWithHTML(t *testing.T) {
 }
 
 func TestRetrieveRejectsHTMLForZip(t *testing.T) {
-	client, server := newTestClient(t, stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, _ *stdhttp.Request) {
+	client, server := newTestClient(t, stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		require.Equal(t, "Wget", r.Header.Get("User-Agent"))
 		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(stdhttp.StatusOK)
 		_, _ = w.Write([]byte("<html>not a zip</html>"))

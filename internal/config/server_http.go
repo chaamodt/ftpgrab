@@ -14,6 +14,7 @@ type ServerHTTP struct {
 	UsernameFile       string         `yaml:"usernameFile,omitempty" json:"usernameFile,omitempty" validate:"omitempty,file"`
 	Password           string         `yaml:"password,omitempty" json:"password,omitempty"`
 	PasswordFile       string         `yaml:"passwordFile,omitempty" json:"passwordFile,omitempty" validate:"omitempty,file"`
+	UserAgent          string         `yaml:"userAgent,omitempty" json:"userAgent,omitempty"`
 	Sources            []string       `yaml:"sources,omitempty" json:"sources,omitempty"`
 	Timeout            *time.Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 	DisableKeepAlives  *bool          `yaml:"disablekeepalives,omitempty" json:"disablekeepalives,omitempty"`

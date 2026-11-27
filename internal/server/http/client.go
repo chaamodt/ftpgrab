@@ -85,8 +85,7 @@ func (c *Client) Common() config.ServerCommon {
 	}
 }
 
-// ReadDir fetches the contents of a directory, returning a list of os.FileInfo's
-// for http urls it heads the url to retrieve size and date
+// ReadDir fetches the contents of a directory, returning a list of os.FileInfo's.
 func (c *Client) ReadDir(path string) ([]os.FileInfo, error) {
 	var urlStr string
 	urlStr = "http"
@@ -99,7 +98,7 @@ func (c *Client) ReadDir(path string) ([]os.FileInfo, error) {
 
 	log.Debug().Msgf("HTTP Head url %s ...", urlStr)
 
-	req, err := http.NewRequest(http.MethodHead, urlStr, nil)
+	req, err := c.newRequest(http.MethodHead, urlStr)
 	if err != nil {
 		log.Debug().Str("path", path).Msgf("Cannot create grab head request for url %s", urlStr)
 		return nil, err
@@ -143,7 +142,7 @@ func (c *Client) ReadDir(path string) ([]os.FileInfo, error) {
 }
 
 func needsGetMetadata(path string, resp *http.Response) bool {
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || resp.ContentLength < 0 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return true
 	}
 
@@ -161,7 +160,7 @@ func isHTMLForNonHTMLPath(path string, resp *http.Response) bool {
 }
 
 func (c *Client) getMetadataWithGet(urlStr, path string, ranged bool) (*http.Response, int64, error) {
-	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+	req, err := c.newRequest(http.MethodGet, urlStr)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -195,9 +194,6 @@ func (c *Client) getMetadataWithGet(urlStr, path string, ranged bool) (*http.Res
 		size, err = contentRangeSize(resp.Header.Get("Content-Range"))
 	default:
 		size = resp.ContentLength
-		if size < 0 {
-			err = fmt.Errorf("GET %s did not provide a content length", urlStr)
-		}
 	}
 	if err != nil {
 		resp.Body.Close()
@@ -205,6 +201,17 @@ func (c *Client) getMetadataWithGet(urlStr, path string, ranged bool) (*http.Res
 	}
 
 	return resp, size, nil
+}
+
+func (c *Client) newRequest(method, urlStr string) (*http.Request, error) {
+	req, err := http.NewRequest(method, urlStr, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.config.UserAgent != "" {
+		req.Header.Set("User-Agent", c.config.UserAgent)
+	}
+	return req, nil
 }
 
 func contentRangeSize(header string) (int64, error) {
@@ -225,6 +232,10 @@ func contentRangeSize(header string) (int64, error) {
 }
 
 func (c *Client) fileInfoFromResponse(path string, resp *http.Response, size int64) ([]os.FileInfo, error) {
+	if size < 0 && resp.Header.Get("last-modified") == "" {
+		return nil, fmt.Errorf("HTTP response for %s has neither a content length nor a Last-Modified header", path)
+	}
+
 	// decode time
 	var resptime time.Time
 	var err error
@@ -313,7 +324,7 @@ func (c *Client) Retrieve(path string, dest io.Writer) error {
 	urlStr += "://" + c.config.Host + ":" + strconv.Itoa(c.config.Port) + path
 
 	// requête GET simple
-	req, err := http.NewRequest("GET", urlStr, nil)
+	req, err := c.newRequest(http.MethodGet, urlStr)
 	if err != nil {
 		return err
 	}

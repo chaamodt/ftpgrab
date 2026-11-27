@@ -164,7 +164,7 @@ func (c *Client) download(file File, retry int) *journal.Entry {
 	sublogger := log.With().
 		Str("src", entry.File).
 		Str("dest", file.DestDir).
-		Str("size", units.HumanSize(float64(file.Info.Size()))).
+		Str("size", formatFileSize(file.Info.Size())).
 		Logger()
 
 	if entry.Status == journal.EntryStatusAlreadyDl && !c.db.HasHash(file.Base, file.SrcDir, file.Info) {
@@ -264,7 +264,7 @@ func (c *Client) download(file File, retry int) *journal.Entry {
 
 		entry.Level = journal.EntryLevelSuccess
 		entry.Text = fmt.Sprintf("%s successfully downloaded in %s",
-			units.HumanSize(float64(file.Info.Size())),
+			formatFileSize(file.Info.Size()),
 			time.Since(retrieveStart).Round(time.Millisecond).String(),
 		)
 		if err := c.fixPerms(destpath); err != nil {
@@ -307,7 +307,7 @@ func (c *Client) GetStatus(file File) journal.EntryStatus {
 	} else if file.Info.ModTime().Before(c.config.SinceTime) {
 		return journal.EntryStatusOutdated
 	} else if destfile, err := os.Stat(path.Join(file.DestDir, file.Info.Name())); err == nil {
-		if destfile.Size() == file.Info.Size() {
+		if localFileMatchesRemote(destfile, file.Info) {
 			return journal.EntryStatusAlreadyDl
 		}
 		return journal.EntryStatusSizeDiff
@@ -315,6 +315,20 @@ func (c *Client) GetStatus(file File) journal.EntryStatus {
 		return journal.EntryStatusHashExists
 	}
 	return journal.EntryStatusNeverDl
+}
+
+func localFileMatchesRemote(local, remote os.FileInfo) bool {
+	if remote.Size() < 0 {
+		return local.ModTime().Equal(remote.ModTime())
+	}
+	return local.Size() == remote.Size()
+}
+
+func formatFileSize(size int64) string {
+	if size < 0 {
+		return "unknown"
+	}
+	return units.HumanSize(float64(size))
 }
 
 func (c *Client) IsIncluded(file File) bool {
